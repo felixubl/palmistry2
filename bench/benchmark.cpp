@@ -134,8 +134,8 @@ void print_environment() {
               << sizeof(std::array<Card, 7>) << " card-ID deal\n";
 }
 
-template <typename A, typename B, typename C>
-void check_random(const A& no_lut, const B& rank_lut, const C& packed_rank_lut, size_t count, uint64_t seed) {
+template <typename... Evaluators>
+void check_random(size_t count, uint64_t seed, const Evaluators&... evaluators) {
     if (count == 0) return;
     SplitMix64 rng(seed);
     uint64_t checksum = 0;
@@ -145,19 +145,18 @@ void check_random(const A& no_lut, const B& rank_lut, const C& packed_rank_lut, 
         const auto cards = random_cards7(rng);
         const Hand hand = hand_from_cards(cards);
         const Score expected = oracle::evaluate_seven_by_fives(cards);
-        const Score s0 = no_lut.evaluate(hand);
-        const Score s1 = rank_lut.evaluate(hand);
-        const Score s2 = packed_rank_lut.evaluate(hand);
-        if (s0 != expected || s1 != expected || s2 != expected) {
+        const std::array<Score, sizeof...(Evaluators)> scores{{evaluators.evaluate(hand)...}};
+        const bool ok = std::all_of(scores.begin(), scores.end(), [expected](Score score) {
+            return score == expected;
+        });
+        if (!ok) {
             std::cerr << "mismatch at random sample " << i << '\n'
                       << "cards:     " << cards_to_string(cards) << '\n'
-                      << "oracle:    " << score_to_string(expected) << '\n'
-                      << "no-LUT:    " << score_to_string(s0) << '\n'
-                      << "rank LUT:  " << score_to_string(s1) << '\n'
-                      << "packed:    " << score_to_string(s2) << '\n';
+                      << "oracle:    " << score_to_string(expected) << '\n';
+            for (Score score : scores) std::cerr << "candidate: " << score_to_string(score) << '\n';
             std::exit(1);
         }
-        checksum += s0;
+        checksum += scores.front();
     }
 
     const auto end = std::chrono::steady_clock::now();
@@ -291,18 +290,26 @@ int main(int argc, char** argv) {
     };
 
     const nolut::Evaluator no_lut;
+    const nolut_flush_first::Evaluator no_lut_flush_first;
     const rank_lut::Evaluator rank_lut;
     const packed_rank_lut::Evaluator packed_rank_lut;
 
     std::cout << "table bytes:\n"
               << "  no-LUT:      " << no_lut.table_bytes << '\n'
+              << "  flush-first: " << no_lut_flush_first.table_bytes << '\n'
               << "  rank LUT:    " << rank_lut.table_bytes << '\n'
               << "  packed LUT:  " << packed_rank_lut.table_bytes << '\n';
     print_environment();
     std::cout << "repetitions:        " << args.reps << "\n\n";
 
     if (!args.skip_check) {
-        check_random(no_lut, rank_lut, packed_rank_lut, args.check, args.seed ^ 0xABCDEFu);
+        check_random(
+            args.check,
+            args.seed ^ 0xABCDEFu,
+            no_lut,
+            no_lut_flush_first,
+            rank_lut,
+            packed_rank_lut);
     }
 
     if (args.hands != 0) {
@@ -310,6 +317,11 @@ int main(int argc, char** argv) {
         const auto hands = generate_hands(args.hands, args.seed);
         std::cout << "stored:             " << mib(hands.size() * sizeof(Hand)) << '\n';
         print_line("no-LUT core", args.hands, "evals", bench_core(no_lut, hands, args.reps));
+        print_line(
+            "no-LUT flush-first core",
+            args.hands,
+            "evals",
+            bench_core(no_lut_flush_first, hands, args.reps));
         print_line("rank LUT core", args.hands, "evals", bench_core(rank_lut, hands, args.reps));
         print_line("packed-rank LUT core", args.hands, "evals", bench_core(packed_rank_lut, hands, args.reps));
     }
@@ -320,6 +332,11 @@ int main(int argc, char** argv) {
         std::cout << "stored:             " << mib(deals.size() * sizeof(std::array<Card, 7>)) << '\n';
         print_line("pack only", args.api_hands, "hands", bench_pack_only(deals, args.reps));
         print_line("no-LUT card API", args.api_hands, "evals", bench_card_api(no_lut, deals, args.reps));
+        print_line(
+            "no-LUT flush-first card API",
+            args.api_hands,
+            "evals",
+            bench_card_api(no_lut_flush_first, deals, args.reps));
         print_line("rank LUT card API", args.api_hands, "evals", bench_card_api(rank_lut, deals, args.reps));
         print_line(
             "packed-rank LUT card API",
@@ -332,6 +349,11 @@ int main(int argc, char** argv) {
         std::cout << "\n[streaming deal + pack + eval]\n";
         const uint64_t stream_seed = args.seed ^ 0xBADC0FFEEull;
         print_line("no-LUT stream", args.stream, "evals", bench_stream(no_lut, args.stream, stream_seed, args.reps));
+        print_line(
+            "no-LUT flush-first stream",
+            args.stream,
+            "evals",
+            bench_stream(no_lut_flush_first, args.stream, stream_seed, args.reps));
         print_line(
             "rank LUT stream",
             args.stream,
@@ -365,6 +387,11 @@ int main(int argc, char** argv) {
                 timed,
                 "evals",
                 bench_bucket(no_lut, buckets[category], args.cat_min_evals, args.reps));
+            print_line(
+                prefix + "no-LUT flush-first",
+                timed,
+                "evals",
+                bench_bucket(no_lut_flush_first, buckets[category], args.cat_min_evals, args.reps));
             print_line(
                 prefix + "rank LUT",
                 timed,

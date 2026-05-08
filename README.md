@@ -1,15 +1,19 @@
 # Poker Evaluator Suite
 
-This repository contains three standalone 7-card Texas Hold'em evaluators with the same public shape and score format:
+This repository contains four standalone 7-card Texas Hold'em evaluators with the same public shape and score format:
 
 | Variant | Table data | Purpose |
 | --- | ---: | --- |
 | `pokereval::nolut::Evaluator` | 0 bytes | Pure arithmetic/bit-operation evaluator. This is the baseline design goal. |
+| `pokereval::nolut_flush_first::Evaluator` | 0 bytes | Faster zero-table evaluator. |
 | `pokereval::rank_lut::Evaluator` | 24 KiB | Rank-mask table evaluator for popcount, straight end, and high bit. |
 | `pokereval::packed_rank_lut::Evaluator` | 48 KiB | Rank-mask table evaluator with packed top-five ranks. |
 
-All three evaluators are header-only and dependency-free. They use the same packed `uint32_t` score, where higher
+All four evaluators are header-only and dependency-free. They use the same packed `uint32_t` score, where higher
 integer values are better hands.
+
+`nolut_flush_first` keeps the zero-table contract but reuses the detected flush lane and removes defensive zero checks
+from internal bit scans whose inputs are already known to be nonzero.
 
 ## Layout
 
@@ -19,6 +23,8 @@ include/pokereval/
   bitops.hpp                   tiny bit-operation helpers
   rank_masks.hpp               shared rank-mask extraction
   evaluator_nolut.hpp          zero-table evaluator
+  evaluator_nolut_flush_first.hpp
+                               faster zero-table evaluator
   evaluator_rank_lut.hpp        24 KiB rank-mask table evaluator
   evaluator_packed_rank_lut.hpp 48 KiB packed-rank table evaluator
   oracle.hpp                   slow 21x five-card correctness oracle
@@ -118,9 +124,9 @@ Current limitations:
 | Omaha-style rules | Not supported | "Use exactly N hole cards" needs filtering or a wrapper. |
 | Short deck / lowball / wildcards | Not supported | Straight rules, rank order, ace handling, or categories change. |
 
-The first structural limit for larger standard-deck hands is ordinary flush selection. Two flush suits require at least
-10 cards, because each flush needs five cards of a suit. Straight flush detection already checks all suits, but ordinary
-flush detection currently picks a single flush suit.
+The first structural limit for larger standard-deck hands is flush selection. Two flush suits require at least 10 cards,
+because each flush needs five cards of a suit. The current evaluators are written around the seven-card invariant that
+there is at most one flush suit.
 
 ## Correctness
 
@@ -136,7 +142,7 @@ Exhaustive checks over all `C(52,7) = 133,784,560` hands:
 ./build/pokereval_check --random 0 --exhaustive
 ```
 
-The checker compares all three evaluators against each other. Random checks also compare against the independent
+The checker compares all four evaluators against each other. Random checks also compare against the independent
 21-combination five-card oracle.
 
 ## Benchmark
@@ -175,20 +181,23 @@ Recent default-run snapshot on an Apple M4 Pro:
 
 ```text
 stored packed core:
-  no-LUT          158.0 M/s
-  rank LUT        174.3 M/s
-  packed-rank LUT 182.2 M/s
+  no-LUT              147.4 M/s
+  no-LUT flush-first  165.9 M/s
+  rank LUT            163.7 M/s
+  packed-rank LUT     165.5 M/s
 
 stored card-ID API:
-  no-LUT           93.2 M/s
-  rank LUT         96.7 M/s
-  packed-rank LUT 100.3 M/s
+  no-LUT               85.1 M/s
+  no-LUT flush-first   95.1 M/s
+  rank LUT             91.0 M/s
+  packed-rank LUT      97.3 M/s
 
 stream deal+pack+eval:
-  no-LUT           44.3 M/s
-  rank LUT         45.6 M/s
-  packed-rank LUT  45.9 M/s
+  no-LUT               41.2 M/s
+  no-LUT flush-first   43.0 M/s
+  rank LUT             41.9 M/s
+  packed-rank LUT      43.6 M/s
 ```
 
-The important result is that the no-LUT evaluator is competitive while remaining table-free. The LUT variants make
+The important result is that the no-LUT evaluators are competitive while remaining table-free. The LUT variants make
 the cost/benefit explicit; they are not the default design goal.

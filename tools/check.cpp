@@ -2,6 +2,7 @@
 #include "pokereval/oracle.hpp"
 #include "pokereval/random.hpp"
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cstdint>
@@ -52,8 +53,8 @@ void usage(const char* program) {
               << "  --help           show this message\n";
 }
 
-template <typename A, typename B, typename C>
-void check_random(const A& no_lut, const B& rank_lut, const C& packed_rank_lut, size_t count, uint64_t seed) {
+template <typename... Evaluators>
+void check_random(size_t count, uint64_t seed, const Evaluators&... evaluators) {
     if (count == 0) return;
 
     SplitMix64 rng(seed);
@@ -64,21 +65,20 @@ void check_random(const A& no_lut, const B& rank_lut, const C& packed_rank_lut, 
         const auto cards = random_cards7(rng);
         const Hand hand = hand_from_cards(cards);
         const Score expected = oracle::evaluate_seven_by_fives(cards);
-        const Score a = no_lut.evaluate(hand);
-        const Score b = rank_lut.evaluate(hand);
-        const Score c = packed_rank_lut.evaluate(hand);
+        const std::array<Score, sizeof...(Evaluators)> scores{{evaluators.evaluate(hand)...}};
+        const bool ok = std::all_of(scores.begin(), scores.end(), [expected](Score score) {
+            return score == expected;
+        });
 
-        if (a != expected || b != expected || c != expected) {
+        if (!ok) {
             std::cerr << "random mismatch at sample " << i << '\n'
                       << "cards:     " << cards_to_string(cards) << '\n'
-                      << "oracle:    " << score_to_string(expected) << '\n'
-                      << "no-LUT:    " << score_to_string(a) << '\n'
-                      << "rank LUT:  " << score_to_string(b) << '\n'
-                      << "packed:    " << score_to_string(c) << '\n';
+                      << "oracle:    " << score_to_string(expected) << '\n';
+            for (Score score : scores) std::cerr << "candidate: " << score_to_string(score) << '\n';
             std::exit(1);
         }
 
-        checksum += a;
+        checksum += scores.front();
     }
 
     const auto end = std::chrono::steady_clock::now();
@@ -88,8 +88,8 @@ void check_random(const A& no_lut, const B& rank_lut, const C& packed_rank_lut, 
               << "s  checksum=" << checksum << '\n';
 }
 
-template <typename A, typename B, typename C>
-void check_exhaustive(const A& no_lut, const B& rank_lut, const C& packed_rank_lut) {
+template <typename... Evaluators>
+void check_exhaustive(const Evaluators&... evaluators) {
     static constexpr std::array<uint64_t, 9> expected_counts{{
         23294460ull,
         58627800ull,
@@ -115,18 +115,20 @@ void check_exhaustive(const A& no_lut, const B& rank_lut, const C& packed_rank_l
                         for (Card f = Card(e + 1); f < 51; ++f) {
                             for (Card g = Card(f + 1); g < 52; ++g) {
                                 const Hand hand = hand_from_cards(a, b, c, d, e, f, g);
-                                const Score s0 = no_lut.evaluate(hand);
-                                const Score s1 = rank_lut.evaluate(hand);
-                                const Score s2 = packed_rank_lut.evaluate(hand);
-                                if (s0 != s1 || s0 != s2) {
-                                    std::cerr << "exhaustive mismatch\n"
-                                              << "no-LUT:    " << score_to_string(s0) << '\n'
-                                              << "rank LUT:  " << score_to_string(s1) << '\n'
-                                              << "packed:    " << score_to_string(s2) << '\n';
+                                const std::array<Score, sizeof...(Evaluators)> scores{{evaluators.evaluate(hand)...}};
+                                const Score score = scores.front();
+                                const bool ok = std::all_of(scores.begin(), scores.end(), [score](Score candidate) {
+                                    return candidate == score;
+                                });
+                                if (!ok) {
+                                    std::cerr << "exhaustive mismatch\n";
+                                    for (Score candidate : scores) {
+                                        std::cerr << "candidate: " << score_to_string(candidate) << '\n';
+                                    }
                                     std::exit(1);
                                 }
-                                ++counts[score_category(s0)];
-                                checksum += s0;
+                                ++counts[score_category(score)];
+                                checksum += score;
                                 ++total;
                             }
                         }
@@ -169,15 +171,17 @@ int main(int argc, char** argv) {
     };
 
     const nolut::Evaluator no_lut;
+    const nolut_flush_first::Evaluator no_lut_flush_first;
     const rank_lut::Evaluator rank_lut;
     const packed_rank_lut::Evaluator packed_rank_lut;
 
     std::cout << "table bytes:\n"
               << "  no-LUT:      " << no_lut.table_bytes << '\n'
+              << "  flush-first: " << no_lut_flush_first.table_bytes << '\n'
               << "  rank LUT:    " << rank_lut.table_bytes << '\n'
               << "  packed LUT:  " << packed_rank_lut.table_bytes << '\n';
 
-    check_random(no_lut, rank_lut, packed_rank_lut, args.random, args.seed);
-    if (args.exhaustive) check_exhaustive(no_lut, rank_lut, packed_rank_lut);
+    check_random(args.random, args.seed, no_lut, no_lut_flush_first, rank_lut, packed_rank_lut);
+    if (args.exhaustive) check_exhaustive(no_lut, no_lut_flush_first, rank_lut, packed_rank_lut);
     return 0;
 }
