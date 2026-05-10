@@ -1,5 +1,4 @@
-#include "pokereval/evaluators.hpp"
-#include "pokereval/oracle.hpp"
+#include "pokereval/evaluator.hpp"
 #include "pokereval/random.hpp"
 
 #include <algorithm>
@@ -22,13 +21,10 @@ struct Args {
     size_t hands = 5000000;
     size_t api_hands = 2000000;
     size_t stream = 1000000;
-    size_t oracle_hands = 20000;
-    size_t check = 100000;
     size_t reps = 5;
     size_t cat_target = 1000;
     size_t cat_min_evals = 5000000;
     uint64_t seed = 1;
-    bool skip_check = false;
     bool skip_category = false;
 };
 
@@ -134,39 +130,7 @@ void print_environment() {
               << sizeof(std::array<Card, 7>) << " card-ID deal\n";
 }
 
-template <typename... Evaluators>
-void check_random(size_t count, uint64_t seed, const Evaluators&... evaluators) {
-    if (count == 0) return;
-    SplitMix64 rng(seed);
-    uint64_t checksum = 0;
-    const auto start = std::chrono::steady_clock::now();
 
-    for (size_t i = 0; i < count; ++i) {
-        const auto cards = random_cards7(rng);
-        const Hand hand = hand_from_cards(cards);
-        const Score expected = oracle::evaluate_seven_by_fives(cards);
-        const std::array<Score, sizeof...(Evaluators)> scores{{evaluators.evaluate(hand)...}};
-        const bool ok = std::all_of(scores.begin(), scores.end(), [expected](Score score) {
-            return score == expected;
-        });
-        if (!ok) {
-            std::cerr << "mismatch at random sample " << i << '\n'
-                      << "cards:     " << cards_to_string(cards) << '\n'
-                      << "oracle:    " << score_to_string(expected) << '\n';
-            for (Score score : scores) std::cerr << "candidate: " << score_to_string(score) << '\n';
-            std::exit(1);
-        }
-        checksum += scores.front();
-    }
-
-    const auto end = std::chrono::steady_clock::now();
-    const double seconds = std::chrono::duration<double>(end - start).count();
-    std::cout << "random check:       " << std::setw(12) << count << " OK in "
-              << std::fixed << std::setprecision(3) << std::setw(8) << seconds
-              << "s  checksum=" << checksum << '\n';
-}
-
-template <typename Evaluator>
 BenchStats bench_core(const Evaluator& evaluator, const std::vector<Hand>& hands, size_t reps) {
     return run_reps(reps, [&](size_t) {
         uint64_t checksum = 0;
@@ -175,7 +139,6 @@ BenchStats bench_core(const Evaluator& evaluator, const std::vector<Hand>& hands
     });
 }
 
-template <typename Evaluator>
 BenchStats bench_card_api(const Evaluator& evaluator, const std::vector<std::array<Card, 7>>& deals, size_t reps) {
     return run_reps(reps, [&](size_t) {
         uint64_t checksum = 0;
@@ -184,7 +147,6 @@ BenchStats bench_card_api(const Evaluator& evaluator, const std::vector<std::arr
     });
 }
 
-template <typename Evaluator>
 BenchStats bench_stream(const Evaluator& evaluator, size_t count, uint64_t seed, size_t reps) {
     return run_reps(reps, [&](size_t rep) {
         SplitMix64 rng(seed + 0xD00D'BEEFull * (rep + 1));
@@ -202,16 +164,8 @@ BenchStats bench_pack_only(const std::vector<std::array<Card, 7>>& deals, size_t
     });
 }
 
-BenchStats bench_oracle(const std::vector<std::array<Card, 7>>& deals, size_t reps) {
-    return run_reps(reps, [&](size_t) {
-        uint64_t checksum = 0;
-        for (const auto& cards : deals) checksum += oracle::evaluate_seven_by_fives(cards);
-        return checksum;
-    });
-}
 
-template <typename Classifier>
-std::array<std::vector<Hand>, 9> collect_categories(const Classifier& classifier, size_t target, uint64_t seed) {
+std::array<std::vector<Hand>, 9> collect_categories(const Evaluator& evaluator, size_t target, uint64_t seed) {
     std::array<std::vector<Hand>, 9> buckets;
     for (auto& bucket : buckets) bucket.reserve(target);
 
@@ -223,7 +177,7 @@ std::array<std::vector<Hand>, 9> collect_categories(const Classifier& classifier
     while (filled < buckets.size() && trials < max_trials) {
         const auto cards = random_cards7(rng);
         const Hand hand = hand_from_cards(cards);
-        const uint32_t category = score_category(classifier.evaluate(hand));
+        const uint32_t category = score_category(evaluator.evaluate(hand));
         if (category < buckets.size() && buckets[category].size() < target) {
             buckets[category].push_back(hand);
             if (buckets[category].size() == target) ++filled;
@@ -241,7 +195,6 @@ std::array<std::vector<Hand>, 9> collect_categories(const Classifier& classifier
     return buckets;
 }
 
-template <typename Evaluator>
 BenchStats bench_bucket(const Evaluator& evaluator, const std::vector<Hand>& bucket, size_t min_evals, size_t reps) {
     const size_t passes = std::max<size_t>(1, (min_evals + bucket.size() - 1) / bucket.size());
     return run_reps(reps, [&](size_t) {
@@ -258,13 +211,10 @@ void usage(const char* program) {
               << "  --hands N           stored packed-hand benchmark       default: 5000000\n"
               << "  --api-hands N       stored card-ID API benchmark       default: 2000000\n"
               << "  --stream N          stream deal+pack+eval benchmark    default: 1000000\n"
-              << "  --oracle-hands N    21x five-card oracle benchmark     default: 20000\n"
-              << "  --check N           random correctness checks          default: 100000\n"
               << "  --reps N            timed repetitions                  default: 5\n"
               << "  --cat-target N      random hands per category          default: 1000\n"
               << "  --cat-min-evals N   min timed evals per category       default: 5000000\n"
               << "  --seed N            RNG seed                           default: 1\n"
-              << "  --no-check          skip random oracle checks\n"
               << "  --no-category       skip per-category benchmark\n"
               << "  --help              show this message\n";
 }
@@ -279,51 +229,26 @@ int main(int argc, char** argv) {
         parse_size(argc, argv, "--hands", 5000000),
         parse_size(argc, argv, "--api-hands", 2000000),
         parse_size(argc, argv, "--stream", 1000000),
-        parse_size(argc, argv, "--oracle-hands", 20000),
-        parse_size(argc, argv, "--check", 100000),
         parse_size(argc, argv, "--reps", 5),
         parse_size(argc, argv, "--cat-target", 1000),
         parse_size(argc, argv, "--cat-min-evals", 5000000),
         parse_u64(argc, argv, "--seed", 1),
-        has_flag(argc, argv, "--no-check"),
         has_flag(argc, argv, "--no-category")
     };
 
-    const nolut::Evaluator no_lut;
-    const nolut_flush_first::Evaluator no_lut_flush_first;
-    const rank_lut::Evaluator rank_lut;
-    const packed_rank_lut::Evaluator packed_rank_lut;
+    const Evaluator evaluator;
 
-    std::cout << "table bytes:\n"
-              << "  no-LUT:      " << no_lut.table_bytes << '\n'
-              << "  flush-first: " << no_lut_flush_first.table_bytes << '\n'
-              << "  rank LUT:    " << rank_lut.table_bytes << '\n'
-              << "  packed LUT:  " << packed_rank_lut.table_bytes << '\n';
+    std::cout << "evaluator:          " << evaluator.name << '\n'
+              << "table bytes:        " << evaluator.table_bytes << '\n';
     print_environment();
     std::cout << "repetitions:        " << args.reps << "\n\n";
 
-    if (!args.skip_check) {
-        check_random(
-            args.check,
-            args.seed ^ 0xABCDEFu,
-            no_lut,
-            no_lut_flush_first,
-            rank_lut,
-            packed_rank_lut);
-    }
 
     if (args.hands != 0) {
         std::cout << "\n[stored packed hands]\n";
         const auto hands = generate_hands(args.hands, args.seed);
         std::cout << "stored:             " << mib(hands.size() * sizeof(Hand)) << '\n';
-        print_line("no-LUT core", args.hands, "evals", bench_core(no_lut, hands, args.reps));
-        print_line(
-            "no-LUT flush-first core",
-            args.hands,
-            "evals",
-            bench_core(no_lut_flush_first, hands, args.reps));
-        print_line("rank LUT core", args.hands, "evals", bench_core(rank_lut, hands, args.reps));
-        print_line("packed-rank LUT core", args.hands, "evals", bench_core(packed_rank_lut, hands, args.reps));
+        print_line("evaluator core", args.hands, "evals", bench_core(evaluator, hands, args.reps));
     }
 
     if (args.api_hands != 0) {
@@ -331,77 +256,31 @@ int main(int argc, char** argv) {
         const auto deals = generate_card_deals(args.api_hands, args.seed ^ 0x12345678u);
         std::cout << "stored:             " << mib(deals.size() * sizeof(std::array<Card, 7>)) << '\n';
         print_line("pack only", args.api_hands, "hands", bench_pack_only(deals, args.reps));
-        print_line("no-LUT card API", args.api_hands, "evals", bench_card_api(no_lut, deals, args.reps));
-        print_line(
-            "no-LUT flush-first card API",
-            args.api_hands,
-            "evals",
-            bench_card_api(no_lut_flush_first, deals, args.reps));
-        print_line("rank LUT card API", args.api_hands, "evals", bench_card_api(rank_lut, deals, args.reps));
-        print_line(
-            "packed-rank LUT card API",
-            args.api_hands,
-            "evals",
-            bench_card_api(packed_rank_lut, deals, args.reps));
+        print_line("evaluator card API", args.api_hands, "evals", bench_card_api(evaluator, deals, args.reps));
     }
 
     if (args.stream != 0) {
         std::cout << "\n[streaming deal + pack + eval]\n";
         const uint64_t stream_seed = args.seed ^ 0xBADC0FFEEull;
-        print_line("no-LUT stream", args.stream, "evals", bench_stream(no_lut, args.stream, stream_seed, args.reps));
-        print_line(
-            "no-LUT flush-first stream",
-            args.stream,
-            "evals",
-            bench_stream(no_lut_flush_first, args.stream, stream_seed, args.reps));
-        print_line(
-            "rank LUT stream",
-            args.stream,
-            "evals",
-            bench_stream(rank_lut, args.stream, stream_seed, args.reps));
-        print_line(
-            "packed-rank LUT stream",
-            args.stream,
-            "evals",
-            bench_stream(packed_rank_lut, args.stream, stream_seed, args.reps));
+        print_line("evaluator stream", args.stream, "evals", bench_stream(evaluator, args.stream, stream_seed, args.reps));
     }
 
-    if (args.oracle_hands != 0) {
-        std::cout << "\n[21x five-card oracle]\n";
-        const auto deals = generate_card_deals(args.oracle_hands, args.seed ^ 0xCAFEBABEu);
-        print_line("oracle 21x eval5", args.oracle_hands, "evals", bench_oracle(deals, std::min<size_t>(args.reps, 3)));
-    }
 
     if (!args.skip_category && args.cat_target != 0 && args.cat_min_evals != 0) {
         std::cout << "\n[per-category stored packed hands]\n";
-        const auto buckets = collect_categories(no_lut, args.cat_target, args.seed ^ 0xFACEFEEDull);
+        const auto buckets = collect_categories(evaluator, args.cat_target, args.seed ^ 0xFACEFEEDull);
         for (size_t category = 0; category < buckets.size(); ++category) {
             if (buckets[category].empty()) continue;
             const size_t passes =
                 std::max<size_t>(1, (args.cat_min_evals + buckets[category].size() - 1) / buckets[category].size());
             const size_t timed = passes * buckets[category].size();
             const std::string prefix =
-                "cat " + std::to_string(category) + " " + category_name(uint32_t(category)) + " ";
+                "cat " + std::to_string(category) + " " + category_name(uint32_t(category));
             print_line(
-                prefix + "no-LUT",
+                prefix,
                 timed,
                 "evals",
-                bench_bucket(no_lut, buckets[category], args.cat_min_evals, args.reps));
-            print_line(
-                prefix + "no-LUT flush-first",
-                timed,
-                "evals",
-                bench_bucket(no_lut_flush_first, buckets[category], args.cat_min_evals, args.reps));
-            print_line(
-                prefix + "rank LUT",
-                timed,
-                "evals",
-                bench_bucket(rank_lut, buckets[category], args.cat_min_evals, args.reps));
-            print_line(
-                prefix + "packed-rank LUT",
-                timed,
-                "evals",
-                bench_bucket(packed_rank_lut, buckets[category], args.cat_min_evals, args.reps));
+                bench_bucket(evaluator, buckets[category], args.cat_min_evals, args.reps));
         }
     }
 

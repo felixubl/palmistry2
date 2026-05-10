@@ -7,7 +7,7 @@
 #include <array>
 #include <cstddef>
 
-namespace pokereval::nolut_flush_first_detail {
+namespace pokereval {
 
 inline uint32_t popcount13(uint16_t mask) noexcept {
     return popcount32(mask);
@@ -27,20 +27,7 @@ inline int32_t straight_end(uint16_t mask) noexcept {
     return (mask & WheelMask) == WheelMask ? 3 : -1;
 }
 
-inline uint32_t take_top_rank(uint16_t& mask) noexcept {
-    const uint32_t rank = top_rank_nonzero(mask);
-    mask = uint16_t(mask ^ uint16_t(1u << rank));
-    return rank;
-}
-
-inline Score top_five_score(uint32_t category, uint16_t mask) noexcept {
-    const uint32_t r0 = take_top_rank(mask);
-    const uint32_t r1 = take_top_rank(mask);
-    const uint32_t r2 = take_top_rank(mask);
-    const uint32_t r3 = take_top_rank(mask);
-    const uint32_t r4 = take_top_rank(mask);
-    return pack_score(category, r0, r1, r2, r3, r4);
-}
+namespace detail {
 
 inline uint16_t flush_mask(const RankMasks& masks, uint32_t pc0, uint32_t pc1, uint32_t pc2, uint32_t pc3) noexcept {
     if (pc0 >= 5) return masks.suit[0];
@@ -50,35 +37,32 @@ inline uint16_t flush_mask(const RankMasks& masks, uint32_t pc0, uint32_t pc1, u
     return 0;
 }
 
-} // namespace pokereval::nolut_flush_first_detail
-
-namespace pokereval::nolut_flush_first {
+} // namespace detail
 
 struct Evaluator {
     static constexpr size_t table_bytes = 0;
     static constexpr const char* name = "no-LUT flush-first";
 
     Score evaluate(Hand hand) const noexcept {
-        using namespace nolut_flush_first_detail;
-
         const RankMasks masks = rank_masks(hand);
         const uint32_t pc0 = popcount13(masks.suit[0]);
         const uint32_t pc1 = popcount13(masks.suit[1]);
         const uint32_t pc2 = popcount13(masks.suit[2]);
         const uint32_t pc3 = popcount13(masks.suit[3]);
-        const uint16_t flush = flush_mask(masks, pc0, pc1, pc2, pc3);
+        const uint16_t flush = detail::flush_mask(masks, pc0, pc1, pc2, pc3);
 
         if (flush != 0) {
-            const int32_t straight_flush = straight_end(flush);
-            if (straight_flush >= 0) {
-                return pack_score(uint32_t(Category::StraightFlush), uint32_t(straight_flush), 0, 0, 0, 0);
+            const int32_t sf = straight_end(flush);
+            if (sf >= 0) {
+                return pack_score(uint32_t(Category::StraightFlush), uint32_t(sf), 0, uint16_t(0));
             }
         }
 
         if (masks.quads != 0) {
             const uint32_t rank = top_rank_nonzero(masks.quads);
-            uint16_t kickers = clear_rank(masks.ranks, rank);
-            return pack_score(uint32_t(Category::Quads), rank, take_top_rank(kickers), 0, 0, 0);
+            const uint16_t kickers = clear_rank(masks.ranks, rank);
+            return pack_score(uint32_t(Category::Quads), rank, 0,
+                              uint16_t(1u << top_rank_nonzero(kickers)));
         }
 
         const uint16_t trips = exact_trips(masks);
@@ -86,45 +70,46 @@ struct Evaluator {
             const uint32_t trip_rank = top_rank_nonzero(trips);
             const uint16_t pair_ranks = clear_rank(masks.pairs_or_better, trip_rank);
             if (pair_ranks != 0) {
-                return pack_score(uint32_t(Category::FullHouse), trip_rank, top_rank_nonzero(pair_ranks), 0, 0, 0);
+                return pack_score(uint32_t(Category::FullHouse), trip_rank,
+                                  top_rank_nonzero(pair_ranks), uint16_t(0));
             }
         }
 
         if (flush != 0) {
-            return top_five_score(uint32_t(Category::Flush), flush);
+            uint16_t fmask = flush;
+            const uint32_t n = popcount13(fmask);
+            if (n > 6) fmask &= uint16_t(fmask - 1);
+            if (n > 5) fmask &= uint16_t(fmask - 1);
+            return pack_score(uint32_t(Category::Flush), 0, 0, fmask);
         }
 
         const int32_t straight = straight_end(masks.ranks);
         if (straight >= 0) {
-            return pack_score(uint32_t(Category::Straight), uint32_t(straight), 0, 0, 0, 0);
+            return pack_score(uint32_t(Category::Straight), uint32_t(straight), 0, uint16_t(0));
         }
 
         if (trips != 0) {
             const uint32_t rank = top_rank_nonzero(trips);
-            uint16_t kickers = clear_rank(masks.ranks, rank);
-            const uint32_t k0 = take_top_rank(kickers);
-            const uint32_t k1 = take_top_rank(kickers);
-            return pack_score(uint32_t(Category::Trips), rank, k0, k1, 0, 0);
+            return pack_score(uint32_t(Category::Trips), rank, 0,
+                              strip_bottom_2(clear_rank(masks.ranks, rank)));
         }
 
         const uint16_t pairs = exact_pairs(masks);
         if (pairs != 0 && (pairs & uint16_t(pairs - 1)) != 0) {
             const uint32_t p0 = top_rank_nonzero(pairs);
             const uint32_t p1 = top_rank_nonzero(clear_rank(pairs, p0));
-            uint16_t kickers = uint16_t(masks.ranks & uint16_t(~uint16_t((1u << p0) | (1u << p1))));
-            return pack_score(uint32_t(Category::TwoPair), p0, p1, take_top_rank(kickers), 0, 0);
+            const uint16_t kickers = uint16_t(masks.ranks & uint16_t(~uint16_t((1u << p0) | (1u << p1))));
+            return pack_score(uint32_t(Category::TwoPair), p0, p1,
+                              uint16_t(1u << top_rank_nonzero(kickers)));
         }
 
         if (pairs != 0) {
             const uint32_t rank = top_rank_nonzero(pairs);
-            uint16_t kickers = clear_rank(masks.ranks, rank);
-            const uint32_t k0 = take_top_rank(kickers);
-            const uint32_t k1 = take_top_rank(kickers);
-            const uint32_t k2 = take_top_rank(kickers);
-            return pack_score(uint32_t(Category::Pair), rank, k0, k1, k2, 0);
+            return pack_score(uint32_t(Category::Pair), rank, 0,
+                              strip_bottom_2(clear_rank(masks.ranks, rank)));
         }
 
-        return top_five_score(uint32_t(Category::HighCard), masks.ranks);
+        return pack_score(uint32_t(Category::HighCard), 0, 0, strip_bottom_2(masks.ranks));
     }
 
     Score evaluate(const std::array<Card, 7>& cards) const noexcept {
@@ -132,4 +117,4 @@ struct Evaluator {
     }
 };
 
-} // namespace pokereval::nolut_flush_first
+} // namespace pokereval

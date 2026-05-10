@@ -15,7 +15,8 @@ using Score = uint32_t;
 constexpr uint32_t RankCount = 13;
 constexpr uint32_t SuitCount = 4;
 constexpr uint32_t SuitLaneBits = 16;
-constexpr size_t RankMaskTableSize = size_t(1) << RankCount;
+constexpr uint32_t CardSuitStride = 16;
+constexpr uint32_t DeckSize = 52;
 constexpr uint16_t RankMask = uint16_t((1u << RankCount) - 1u);
 constexpr uint16_t WheelMask = uint16_t((1u << 12) | (1u << 0) | (1u << 1) | (1u << 2) | (1u << 3));
 
@@ -31,16 +32,26 @@ enum class Category : uint32_t {
     StraightFlush = 8
 };
 
-inline Score pack_score(uint32_t category, uint32_t r0, uint32_t r1, uint32_t r2, uint32_t r3, uint32_t r4) noexcept {
-    return (category << 20) | (r0 << 16) | (r1 << 12) | (r2 << 8) | (r3 << 4) | r4;
+inline Score pack_score(uint32_t category, uint32_t r0, uint32_t r1, uint16_t kickers) noexcept {
+    return (category << 21) | (r0 << 17) | (r1 << 13) | uint32_t(kickers);
 }
 
 inline uint32_t score_category(Score score) noexcept {
-    return (score >> 20) & 0xFu;
+    return (score >> 21) & 0xFu;
 }
 
-inline uint32_t score_rank(Score score, uint32_t index) noexcept {
-    return (score >> (16u - 4u * index)) & 0xFu;
+inline uint32_t score_primary_rank(Score score, uint32_t index) noexcept {
+    return (score >> (17u - 4u * index)) & 0xFu;
+}
+
+inline uint16_t score_kicker_mask(Score score) noexcept {
+    return uint16_t(score & RankMask);
+}
+
+inline uint16_t strip_bottom_2(uint16_t mask) noexcept {
+    mask &= uint16_t(mask - 1);
+    mask &= uint16_t(mask - 1);
+    return mask;
 }
 
 inline const char* category_name(uint32_t category) noexcept {
@@ -58,16 +69,20 @@ inline const char* category_name(uint32_t category) noexcept {
     return category < 9 ? names[category] : "unknown";
 }
 
+inline constexpr Card make_card(uint32_t rank, uint32_t suit) noexcept {
+    return Card(suit * CardSuitStride + rank);
+}
+
 inline uint32_t card_rank(Card card) noexcept {
-    return uint32_t(card % RankCount);
+    return uint32_t(card & 0xFu);
 }
 
 inline uint32_t card_suit(Card card) noexcept {
-    return uint32_t(card / RankCount);
+    return uint32_t(card >> 4);
 }
 
 inline Hand card_bit(Card card) noexcept {
-    return Hand(1) << (card_suit(card) * SuitLaneBits + card_rank(card));
+    return Hand(1) << card;
 }
 
 inline void add_card(Hand& hand, Card card) noexcept {
@@ -121,15 +136,34 @@ inline std::string cards_to_string(const std::array<Card, 7>& cards) {
 }
 
 inline std::string score_to_string(Score score) {
+    static constexpr char rank_chars[] = "23456789TJQKA";
     std::ostringstream out;
-    out << "cat=" << score_category(score) << "(" << category_name(score_category(score)) << "), ranks=["
-        << score_rank(score, 0) << ','
-        << score_rank(score, 1) << ','
-        << score_rank(score, 2) << ','
-        << score_rank(score, 3) << ','
-        << score_rank(score, 4) << "], raw=0x";
+    const uint32_t cat = score_category(score);
+    out << "cat=" << cat << "(" << category_name(cat) << ")";
+    const uint32_t r0 = score_primary_rank(score, 0);
+    const uint32_t r1 = score_primary_rank(score, 1);
+    if (r0 > 0 || r1 > 0) {
+        out << ", ranks=[";
+        if (r0 < RankCount) out << rank_chars[r0];
+        if (r1 > 0 && r1 < RankCount) out << ',' << rank_chars[r1];
+        out << ']';
+    }
+    const uint16_t kickers = score_kicker_mask(score);
+    if (kickers != 0) {
+        out << ", kickers={";
+        bool first = true;
+        for (int i = 12; i >= 0; --i) {
+            if (kickers & (1u << i)) {
+                if (!first) out << ',';
+                out << rank_chars[i];
+                first = false;
+            }
+        }
+        out << '}';
+    }
+    out << ", raw=0x";
     out.setf(std::ios::hex, std::ios::basefield);
-    out.width(6);
+    out.width(7);
     out.fill('0');
     out << score;
     return out.str();

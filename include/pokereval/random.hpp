@@ -32,11 +32,13 @@ struct SplitMix64 {
 };
 
 inline std::array<Card, 7> random_cards7(SplitMix64& rng) noexcept {
-    std::array<Card, 52> deck{};
-    for (Card i = 0; i < deck.size(); ++i) deck[i] = i;
+    std::array<Card, DeckSize> deck{};
+    for (uint32_t s = 0; s < SuitCount; ++s)
+        for (uint32_t r = 0; r < RankCount; ++r)
+            deck[s * RankCount + r] = make_card(r, s);
 
     for (uint32_t i = 0; i < 7; ++i) {
-        const uint32_t j = i + rng.range(52u - i);
+        const uint32_t j = i + rng.range(DeckSize - i);
         const Card tmp = deck[i];
         deck[i] = deck[j];
         deck[j] = tmp;

@@ -1,8 +1,6 @@
-#include "pokereval/evaluators.hpp"
-#include "pokereval/oracle.hpp"
+#include "pokereval/evaluator.hpp"
 #include "pokereval/random.hpp"
 
-#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cstdint>
@@ -14,7 +12,7 @@
 using namespace pokereval;
 
 struct Args {
-    size_t random = 100000;
+    size_t random = 1000000;
     uint64_t seed = 1;
     bool exhaustive = false;
 };
@@ -47,49 +45,42 @@ bool has_flag(int argc, char** argv, const char* flag) {
 
 void usage(const char* program) {
     std::cout << "Usage: " << program << " [options]\n"
-              << "  --random N       random oracle checks   default: 100000\n"
-              << "  --seed N         RNG seed                default: 1\n"
+              << "  --random N       random hands to evaluate  default: 1000000\n"
+              << "  --seed N         RNG seed                  default: 1\n"
               << "  --exhaustive     check all C(52,7) hands\n"
               << "  --help           show this message\n";
 }
 
-template <typename... Evaluators>
-void check_random(size_t count, uint64_t seed, const Evaluators&... evaluators) {
+void check_random(const Evaluator& evaluator, size_t count, uint64_t seed) {
     if (count == 0) return;
 
     SplitMix64 rng(seed);
+    std::array<uint64_t, 9> counts{};
     uint64_t checksum = 0;
     const auto start = std::chrono::steady_clock::now();
 
     for (size_t i = 0; i < count; ++i) {
         const auto cards = random_cards7(rng);
         const Hand hand = hand_from_cards(cards);
-        const Score expected = oracle::evaluate_seven_by_fives(cards);
-        const std::array<Score, sizeof...(Evaluators)> scores{{evaluators.evaluate(hand)...}};
-        const bool ok = std::all_of(scores.begin(), scores.end(), [expected](Score score) {
-            return score == expected;
-        });
-
-        if (!ok) {
-            std::cerr << "random mismatch at sample " << i << '\n'
-                      << "cards:     " << cards_to_string(cards) << '\n'
-                      << "oracle:    " << score_to_string(expected) << '\n';
-            for (Score score : scores) std::cerr << "candidate: " << score_to_string(score) << '\n';
-            std::exit(1);
-        }
-
-        checksum += scores.front();
+        const Score score = evaluator.evaluate(hand);
+        ++counts[score_category(score)];
+        checksum += score;
     }
 
     const auto end = std::chrono::steady_clock::now();
     const double seconds = std::chrono::duration<double>(end - start).count();
-    std::cout << "random checks:      " << std::setw(12) << count << " OK in "
+    const double mps = (double(count) / seconds) / 1'000'000.0;
+    std::cout << "random hands:       " << std::setw(12) << count << " in "
               << std::fixed << std::setprecision(3) << std::setw(8) << seconds
-              << "s  checksum=" << checksum << '\n';
+              << "s  " << std::setw(10) << mps << " M hands/s"
+              << "  checksum=" << checksum << '\n';
+    for (size_t i = 0; i < counts.size(); ++i) {
+        std::cout << "  cat " << i << ' ' << std::left << std::setw(15) << category_name(uint32_t(i)) << std::right
+                  << " count=" << std::setw(10) << counts[i] << '\n';
+    }
 }
 
-template <typename... Evaluators>
-void check_exhaustive(const Evaluators&... evaluators) {
+void check_exhaustive(const Evaluator& evaluator) {
     static constexpr std::array<uint64_t, 9> expected_counts{{
         23294460ull,
         58627800ull,
@@ -102,31 +93,25 @@ void check_exhaustive(const Evaluators&... evaluators) {
         41584ull
     }};
 
+    std::array<Card, DeckSize> deck{};
+    for (uint32_t s = 0; s < SuitCount; ++s)
+        for (uint32_t r = 0; r < RankCount; ++r)
+            deck[s * RankCount + r] = make_card(r, s);
+
     std::array<uint64_t, 9> counts{};
     uint64_t total = 0;
     uint64_t checksum = 0;
     const auto start = std::chrono::steady_clock::now();
 
-    for (Card a = 0; a < 46; ++a) {
-        for (Card b = Card(a + 1); b < 47; ++b) {
-            for (Card c = Card(b + 1); c < 48; ++c) {
-                for (Card d = Card(c + 1); d < 49; ++d) {
-                    for (Card e = Card(d + 1); e < 50; ++e) {
-                        for (Card f = Card(e + 1); f < 51; ++f) {
-                            for (Card g = Card(f + 1); g < 52; ++g) {
-                                const Hand hand = hand_from_cards(a, b, c, d, e, f, g);
-                                const std::array<Score, sizeof...(Evaluators)> scores{{evaluators.evaluate(hand)...}};
-                                const Score score = scores.front();
-                                const bool ok = std::all_of(scores.begin(), scores.end(), [score](Score candidate) {
-                                    return candidate == score;
-                                });
-                                if (!ok) {
-                                    std::cerr << "exhaustive mismatch\n";
-                                    for (Score candidate : scores) {
-                                        std::cerr << "candidate: " << score_to_string(candidate) << '\n';
-                                    }
-                                    std::exit(1);
-                                }
+    for (uint32_t a = 0; a < DeckSize - 6; ++a) {
+        for (uint32_t b = a + 1; b < DeckSize - 5; ++b) {
+            for (uint32_t c = b + 1; c < DeckSize - 4; ++c) {
+                for (uint32_t d = c + 1; d < DeckSize - 3; ++d) {
+                    for (uint32_t e = d + 1; e < DeckSize - 2; ++e) {
+                        for (uint32_t f = e + 1; f < DeckSize - 1; ++f) {
+                            for (uint32_t g = f + 1; g < DeckSize; ++g) {
+                                const Hand hand = hand_from_cards(deck[a], deck[b], deck[c], deck[d], deck[e], deck[f], deck[g]);
+                                const Score score = evaluator.evaluate(hand);
                                 ++counts[score_category(score)];
                                 checksum += score;
                                 ++total;
@@ -141,7 +126,7 @@ void check_exhaustive(const Evaluators&... evaluators) {
     const auto end = std::chrono::steady_clock::now();
     const double seconds = std::chrono::duration<double>(end - start).count();
     const double mps = (double(total) / seconds) / 1'000'000.0;
-    std::cout << "exhaustive checks:  " << std::setw(12) << total << " OK in "
+    std::cout << "exhaustive:         " << std::setw(12) << total << " in "
               << std::fixed << std::setprecision(3) << std::setw(8) << seconds
               << "s  " << std::setw(10) << mps << " M hands/s"
               << "  checksum=" << checksum << '\n';
@@ -165,23 +150,17 @@ int main(int argc, char** argv) {
     }
 
     const Args args{
-        parse_size(argc, argv, "--random", 100000),
+        parse_size(argc, argv, "--random", 1000000),
         parse_u64(argc, argv, "--seed", 1),
         has_flag(argc, argv, "--exhaustive")
     };
 
-    const nolut::Evaluator no_lut;
-    const nolut_flush_first::Evaluator no_lut_flush_first;
-    const rank_lut::Evaluator rank_lut;
-    const packed_rank_lut::Evaluator packed_rank_lut;
+    const Evaluator evaluator;
 
-    std::cout << "table bytes:\n"
-              << "  no-LUT:      " << no_lut.table_bytes << '\n'
-              << "  flush-first: " << no_lut_flush_first.table_bytes << '\n'
-              << "  rank LUT:    " << rank_lut.table_bytes << '\n'
-              << "  packed LUT:  " << packed_rank_lut.table_bytes << '\n';
+    std::cout << "evaluator:          " << evaluator.name << '\n'
+              << "table bytes:        " << evaluator.table_bytes << '\n';
 
-    check_random(args.random, args.seed, no_lut, no_lut_flush_first, rank_lut, packed_rank_lut);
-    if (args.exhaustive) check_exhaustive(no_lut, no_lut_flush_first, rank_lut, packed_rank_lut);
+    check_random(evaluator, args.random, args.seed);
+    if (args.exhaustive) check_exhaustive(evaluator);
     return 0;
 }
