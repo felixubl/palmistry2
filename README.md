@@ -1,3 +1,8 @@
+> **Archived.** This is an early generation of an evaluator that is still being
+> worked on. The current one is [palmistry3](https://github.com/felixubl/palmistry3). Its
+> [LINEAGE.md](https://github.com/felixubl/palmistry3/blob/main/LINEAGE.md) explains how this fits in, and every
+> generation's history lives in that repository too, on branch `history/palmistry2`.
+
 # Poker Evaluator Suite
 
 This repository contains four standalone 7-card Texas Hold'em evaluators with the same public shape and score format:
